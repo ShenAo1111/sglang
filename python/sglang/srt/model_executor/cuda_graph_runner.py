@@ -227,7 +227,7 @@ class CudaGraphRunner:
             self.out_cache_loc = torch.zeros((self.max_num_token,), dtype=torch.int64)
             self.positions = torch.zeros((self.max_num_token,), dtype=torch.int64)
             self.mrope_positions = torch.zeros((3, self.max_bs), dtype=torch.int64)
-            self.topk_probs = torch.zeros((self.max_bs, self.max_topk), dtype=torch.int64) if self.enable_soft_thinking else None
+            self.topk_probs = torch.zeros((self.max_bs, self.max_topk), dtype=self.model_runner.dtype) if self.enable_soft_thinking else None
             self.topk_indices = torch.zeros((self.max_bs, self.max_topk), dtype=torch.int64) if self.enable_soft_thinking else None
 
             # Speculative_inference
@@ -508,7 +508,15 @@ class CudaGraphRunner:
             self.out_cache_loc.zero_()
 
         # Common inputs
-        self.input_ids[:raw_num_token].copy_(forward_batch.input_ids)
+        if self.enable_soft_thinking:
+            self.topk_probs[:raw_bs].copy_(
+                forward_batch.topk_probs
+            )
+            self.topk_indices[:raw_bs].copy_(
+                forward_batch.topk_indices
+            )
+        else:
+            self.input_ids[:raw_num_token].copy_(forward_batch.input_ids)
         self.req_pool_indices[:raw_bs].copy_(forward_batch.req_pool_indices)
         self.seq_lens[:raw_bs].copy_(forward_batch.seq_lens)
         self.out_cache_loc[:raw_num_token].copy_(forward_batch.out_cache_loc)
@@ -552,9 +560,14 @@ class CudaGraphRunner:
             self.replay_prepare(forward_batch)
         else:
             # In speculative decoding, these two fields are still needed.
-            # TODO@Ao: CUDA Graph Support
             if self.enable_soft_thinking:
-                pass
+                bs = forward_batch.batch_size
+                self.topk_probs[: bs].copy_(
+                    forward_batch.topk_probs
+                )
+                self.topk_indices[: bs].copy_(
+                    forward_batch.topk_indices
+                )
             else:
                 self.input_ids[: self.raw_num_token].copy_(forward_batch.input_ids)
             self.positions[: self.raw_num_token].copy_(forward_batch.positions)

@@ -503,7 +503,6 @@ class VocabParallelEmbedding(torch.nn.Module):
 
         # Validate inputs
         assert topk_probs.shape == topk_indices.shape, "topk_probs and topk_indices must have same shape."
-        assert topk_indices.max() < self.num_embeddings, "topk_indices exceed vocabulary size."
 
         # Use quant_method.embedding for consistency
         topk_embeddings = self.quant_method.embedding(self, topk_indices.long())  # [B, K, D]
@@ -522,26 +521,17 @@ class VocabParallelEmbedding(torch.nn.Module):
         """
         # Validate inputs
         assert topk_probs.shape == topk_indices.shape, "topk_probs and topk_indices must have same shape."
-        assert topk_indices.max() < self.num_embeddings, "topk_indices exceed vocabulary size."
-
         masked_indices, input_mask = self.get_masked_indices_and_mask(
             topk_indices,
             self.shard_indices.org_vocab_start_index,
             self.shard_indices.org_vocab_end_index,
         )
         topk_embeddings: torch.Tensor = self.quant_method.embedding(self, masked_indices.long())  # [B, K, D]
-        if input_mask.all():
-            hidden_states_parallel = torch.zeros(
-                (topk_probs.size(0), self.embedding_dim),
-                dtype=topk_embeddings.dtype,
-                device=topk_embeddings.device,
-            )
-        else:
-            input_mask = input_mask.unsqueeze(-1)  # [B, K, 1]
-            topk_embeddings.masked_fill_(input_mask, 0)  # Zero out invalid indices
-            hidden_states_parallel = torch.sum(
-                topk_probs.unsqueeze(-1) * topk_embeddings, dim=1, dtype=topk_embeddings.dtype
-            )  # [B, D]
+        input_mask = input_mask.unsqueeze(-1)  # [B, K, 1]
+        topk_embeddings.masked_fill_(input_mask, 0)  # Zero out invalid indices
+        hidden_states_parallel = torch.sum(
+            topk_probs.unsqueeze(-1) * topk_embeddings, dim=1, dtype=topk_embeddings.dtype
+        )  # [B, D]
         hidden_states = tensor_model_parallel_all_reduce(hidden_states_parallel)
         return hidden_states
 

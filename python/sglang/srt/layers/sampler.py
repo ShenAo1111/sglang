@@ -268,14 +268,14 @@ class Sampler(nn.Module):
 
         # Mode 0: one-hot and sampled index
         sampled_indices = torch.multinomial(normalized_probs_sort[:, :max_k], num_samples=1)  # (B, 1)
-        one_hot_probs = torch.zeros_like(topk_probs).scatter_(1, sampled_indices, 1.0)  # (B, K)
+        one_hot_probs = torch.zeros_like(topk_probs, dtype=logits_output.hidden_states.dtype).scatter_(1, sampled_indices, 1.0)  # (B, K)
         sampled_token_ids = torch.gather(probs_idx[:, :max_k], dim=1, index=sampled_indices)  # (B, 1)
-        one_hot_indices = torch.zeros_like(topk_indices).scatter_(1, sampled_indices, sampled_token_ids)  # (B, K)
+        one_hot_indices = torch.zeros_like(topk_indices, dtype=topk_indices.dtype).scatter_(1, sampled_indices, sampled_token_ids)  # (B, K)
 
         # Combine based on soft_thinking_modes
         # Initialize output tensors
         soft_thinking_modes = sampling_info.soft_thinking_modes
-        one_hot_probs[soft_thinking_modes] = topk_probs[soft_thinking_modes]
+        one_hot_probs[soft_thinking_modes] = topk_probs[soft_thinking_modes].to(logits_output.hidden_states.dtype)
         one_hot_indices[soft_thinking_modes] = topk_indices[soft_thinking_modes]
         combined_probs = one_hot_probs
         combined_indices = one_hot_indices
