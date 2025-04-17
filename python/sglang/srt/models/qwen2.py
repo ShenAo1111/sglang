@@ -261,6 +261,8 @@ class Qwen2Model(nn.Module):
             prefix=add_prefix("layers", prefix),
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        
+        self.tp_size = get_tensor_model_parallel_world_size()
 
     def get_input_embedding(self, input_ids: torch.Tensor) -> torch.Tensor:
         if hasattr(self.config, "scale_emb"):
@@ -278,7 +280,16 @@ class Qwen2Model(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor = None,
     ) -> torch.Tensor:
-        if input_embeds is None:
+        if forward_batch.topk_probs is not None and forward_batch.topk_indices is not None:
+            if self.tp_size > 1:
+                hidden_states = self.embed_tokens.weighted_forward_tp(
+                    forward_batch.topk_probs, forward_batch.topk_indices
+                )
+            else:
+                hidden_states = self.embed_tokens.weighted_forward(
+                    forward_batch.topk_probs, forward_batch.topk_indices
+                )  
+        elif input_embeds is None:
             hidden_states = self.embed_tokens(input_ids)
         else:
             hidden_states = input_embeds
@@ -377,16 +388,6 @@ class Qwen2ForCausalLM(nn.Module):
         input_embeds: torch.Tensor = None,
         get_embedding: bool = False,
     ) -> torch.Tensor:
-        if forward_batch.topk_probs is not None and forward_batch.topk_indices is not None:
-            # topk_probs, topk_indices: [B, K]
-            embeddings = self.model.embed_tokens.weight  # [V, D]
-
-            # Gather embeddings: [B, K, D]
-            topk_embeddings = embeddings[forward_batch.topk_indices]  # 利用 advanced indexing
-
-            # Add weights: [B, K, 1] * [B, K, D] -> [B, K, D], then sum -> [B, D]
-            input_embeds = torch.sum(forward_batch.topk_probs.unsqueeze(-1) * topk_embeddings, dim=1)  # [B, D]
-            input_embeds = input_embeds.to(self.model.embed_tokens.weight.dtype)
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
         if not get_embedding:
             return self.logits_processor(

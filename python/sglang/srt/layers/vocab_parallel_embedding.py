@@ -489,6 +489,84 @@ class VocabParallelEmbedding(torch.nn.Module):
             output = output_parallel
         return output
 
+    # topk_probs is not None and topk_indices
+    def weighted_forward(self, topk_probs: torch.Tensor, topk_indices: torch.Tensor) -> torch.Tensor:
+        """Single-GPU weighted embedding forward.
+
+        Args:
+            topk_probs: [B, K] tensor of probabilities for top-K tokens.
+            topk_indices: [B, K] tensor of token indices for top-K tokens.
+
+        Returns:
+            hidden_states: [B, D] weighted embedding.
+        """
+
+        # Validate inputs
+        assert topk_probs.shape == topk_indices.shape, "topk_probs and topk_indices must have same shape."
+        assert topk_indices.max() < self.num_embeddings, "topk_indices exceed vocabulary size."
+
+        # Use quant_method.embedding for consistency
+        topk_embeddings = self.quant_method.embedding(self, topk_indices.long())  # [B, K, D]
+        hidden_states = torch.sum(topk_probs.unsqueeze(-1) * topk_embeddings, dim=1, dtype=topk_embeddings.dtype)  # [B, D]
+        return hidden_states
+
+    def weighted_forward_tp(self, topk_probs: torch.Tensor, topk_indices: torch.Tensor) -> torch.Tensor:
+        """Tensor Parallel weighted embedding forward.
+
+        Args:
+            topk_probs: [B, K] tensor of probabilities for top-K tokens.
+            topk_indices: [B, K] tensor of token indices for top-K tokens.
+
+        Returns:
+            hidden_states: [B, D] weighted embedding after TP all-reduce.
+        """
+        # Validate inputs
+        assert topk_probs.shape == topk_indices.shape, "topk_probs and topk_indices must have same shape."
+        assert topk_indices.max() < self.num_embeddings, "topk_indices exceed vocabulary size."
+
+        masked_indices, input_mask = self.get_masked_indices_and_mask(
+            topk_indices,
+            self.shard_indices.org_vocab_start_index,
+            self.shard_indices.org_vocab_end_index,
+        )
+        topk_embeddings: torch.Tensor = self.quant_method.embedding(self, masked_indices.long())  # [B, K, D]
+        if input_mask.all():
+            hidden_states_parallel = torch.zeros(
+                (topk_probs.size(0), self.embedding_dim),
+                dtype=topk_embeddings.dtype,
+                device=topk_embeddings.device,
+            )
+        else:
+            input_mask = input_mask.unsqueeze(-1)  # [B, K, 1]
+            topk_embeddings.masked_fill_(input_mask, 0)  # Zero out invalid indices
+            hidden_states_parallel = torch.sum(
+                topk_probs.unsqueeze(-1) * topk_embeddings, dim=1, dtype=topk_embeddings.dtype
+            )  # [B, D]
+        hidden_states = tensor_model_parallel_all_reduce(hidden_states_parallel)
+        return hidden_states
+
+    def get_masked_indices_and_mask(
+        self,
+        indices: torch.Tensor,
+        org_vocab_start_index: int,
+        org_vocab_end_index: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Map indices to current GPU's vocab shard and generate mask.
+
+        Args:
+            indices: [B, K] tensor of token indices.
+            org_vocab_start_index: Start index of current GPU's vocab shard.
+            org_vocab_end_index: End index of current GPU's vocab shard.
+
+        Returns:
+            masked_indices: [B, K] mapped indices for current shard.
+            vocab_mask: [B, K] boolean mask (True for invalid indices).
+        """
+        vocab_mask = (indices >= org_vocab_start_index) & (indices < org_vocab_end_index)
+        valid_offset = org_vocab_start_index * vocab_mask
+        masked_indices = vocab_mask * (indices - valid_offset)
+        return masked_indices, ~vocab_mask
+
     def extra_repr(self) -> str:
         s = f"num_embeddings={self.num_embeddings_per_partition}"
         s += f", embedding_dim={self.embedding_dim}"
