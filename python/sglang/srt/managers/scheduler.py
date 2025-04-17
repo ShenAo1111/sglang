@@ -427,6 +427,9 @@ class Scheduler(
             self.server_args.disaggregation_mode
         )
         self.init_disaggregation()
+        
+        self.enable_soft_thinking = server_args.enable_soft_thinking
+        self.max_topk = server_args.max_topk
 
     def init_tokenizer(self):
         server_args = self.server_args
@@ -441,6 +444,8 @@ class Scheduler(
             enable_multimodal=server_args.enable_multimodal,
             dtype=server_args.dtype,
             quantization=server_args.quantization,
+            enable_soft_thinking=server_args.enable_soft_thinking,
+            max_topk=server_args.max_topk,
         )
         self.is_generation = self.model_config.is_generation
 
@@ -784,6 +789,8 @@ class Scheduler(
                 eos_token_ids=self.model_config.hf_eos_token_id,
                 bootstrap_host=recv_req.bootstrap_host,
                 bootstrap_room=recv_req.bootstrap_room,
+                enable_soft_thinking=self.enable_soft_thinking,
+                max_topk=self.max_topk,
             )
             req.tokenizer = self.tokenizer
 

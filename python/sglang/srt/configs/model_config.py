@@ -47,6 +47,8 @@ class ModelConfig:
         dtype: str = "auto",
         quantization: Optional[str] = None,
         override_config_file: Optional[str] = None,
+        enable_soft_thinking: Optional[bool] = None,
+        max_topk: Optional[int] = None,
     ) -> None:
 
         self.model_path = model_path
@@ -186,6 +188,9 @@ class ModelConfig:
         # Cache attributes
         self.hf_eos_token_id = self.get_hf_eos_token_id()
         self.image_token_id = getattr(self.hf_config, "image_token_id", None)
+        
+        self.enable_soft_thinking = enable_soft_thinking
+        self.max_topk = max_topk
 
     # adapted from https://github.com/vllm-project/vllm/blob/main/vllm/config.py#L289
     def get_total_num_kv_heads(self) -> int:

@@ -15,6 +15,8 @@
 
 from typing import Any, Dict, List, Optional, Union
 
+import torch
+
 _SAMPLING_EPS = 1e-6
 
 
@@ -50,6 +52,7 @@ class SamplingParams:
         spaces_between_special_tokens: bool = True,
         no_stop_trim: bool = False,
         custom_params: Optional[Dict[str, Any]] = None,
+        think_end_token: Optional[str] = None,
     ) -> None:
         self.max_new_tokens = max_new_tokens
         self.stop_strs = stop
@@ -83,6 +86,9 @@ class SamplingParams:
             self.top_k = 1
         if self.top_k == -1:
             self.top_k = 1 << 30  # whole vocabulary
+            
+        self.soft_thinking_mode = None
+        self.think_end_token = think_end_token
 
     def verify(self):
         if self.temperature < 0.0:
@@ -151,3 +157,7 @@ class SamplingParams:
                 else:
                     stop_str_max_len = max(stop_str_max_len, len(stop_str))
             self.stop_str_max_len = stop_str_max_len
+            
+    def post_init_soft_thinking_mode(self):
+        # TODO: 换成cpu的，然后init的时候再传输，topk也是一样，会造成主卡显存不足
+        self.soft_thinking_mode = torch.tensor(True, dtype=torch.bool, device='cuda') 

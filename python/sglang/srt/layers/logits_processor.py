@@ -73,7 +73,10 @@ class LogitsProcessorOutput:
     # The logprobs and ids of the requested token ids in input positions. shape: [#seq, n] (n is the number of requested token ids)
     input_token_ids_logprobs_val: Optional[List] = None
     input_token_ids_logprobs_idx: Optional[List] = None
-
+    
+    topk_probs: Optional[torch.Tensor] = None
+    topk_indices: Optional[torch.Tensor] = None
+    
 
 @dataclasses.dataclass
 class LogitsMetadata:

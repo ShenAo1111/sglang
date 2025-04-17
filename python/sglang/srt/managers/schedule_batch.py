@@ -391,6 +391,8 @@ class Req:
         eos_token_ids: Optional[Set[int]] = None,
         bootstrap_host: Optional[str] = None,
         bootstrap_room: Optional[int] = None,
+        enable_soft_thinking: bool = False,
+        max_topk: Optional[int] = None,
     ):
         # Input and output info
         self.rid = rid
@@ -540,7 +542,13 @@ class Req:
         self.metadata_buffer_index: int = -1
         # The first output_id transferred from prefill instance.
         self.transferred_output_id: Optional[int] = None
-
+        
+        self.enable_soft_thinking = enable_soft_thinking
+        if self.enable_soft_thinking:
+            self.sampling_params.post_init_soft_thinking_mode()
+            self.topk_prob = None
+            self.topk_idx = None
+            
     @property
     def seqlen(self):
         return len(self.origin_input_ids) + len(self.output_ids)
@@ -652,6 +660,11 @@ class Req:
                 if stop_str in tail_str or stop_str in self.decoded_text:
                     self.finished_reason = FINISH_MATCHED_STR(matched=stop_str)
                     return
+        
+        if self.sampling_params.soft_thinking_mode:
+            # Check if the last token is a soft thinking end token
+            if last_token_id == self.sampling_params.think_end_token:
+                self.sampling_params.soft_thinking_mode = False
 
     def reset_for_retract(self):
         self.prefix_indices = []
@@ -759,6 +772,12 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     # Whether to return hidden states
     return_hidden_states: bool = False
 
+    # For soft thinking mode
+    enable_soft_thinking: bool = None
+    max_topk: Optional[int] = None
+    topk_probs: Optional[torch.Tensor] = None
+    topk_indices: Optional[torch.Tensor] = None
+
     @classmethod
     def init_new(
         cls,
@@ -787,6 +806,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             spec_algorithm=spec_algorithm,
             enable_custom_logit_processor=enable_custom_logit_processor,
             return_hidden_states=any(req.return_hidden_states for req in reqs),
+            enable_soft_thinking=model_config.enable_soft_thinking,
+            max_topk=model_config.max_topk,
         )
 
     def batch_size(self):
@@ -1493,7 +1514,11 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 self.sampling_info.grammars = [req.grammar for req in self.reqs]
             else:
                 self.sampling_info.grammars = None
-
+        topk_probs = None
+        topk_indices = None
+        if self.model_config.enable_soft_thinking and self.forward_mode.is_decode():
+            topk_probs = torch.stack([req.topk_prob for req in self.reqs])
+            topk_indices = torch.stack[req.topk_idx for req in self.reqs])
         global bid
         bid += 1
         return ModelWorkerBatch(
@@ -1525,19 +1550,21 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             input_embeds=self.input_embeds,
             spec_algorithm=self.spec_algorithm,
             spec_info=self.spec_info,
-            capture_hidden_mode=(
-                CaptureHiddenMode.FULL
-                if self.return_hidden_states
-                else (
-                    getattr(
-                        self.spec_info, "capture_hidden_mode", CaptureHiddenMode.NULL
-                    )
-                    if self.spec_info
-                    else CaptureHiddenMode.NULL
-                )
-            ),
+            capture_hidden_mode=self._get_capture_hidden_mode(),
             extend_input_logprob_token_ids=self.extend_input_logprob_token_ids,
+            topk_probs=topk_probs,
+            topk_indices=topk_indices,
         )
+
+    def _get_capture_hidden_mode(self):
+        if self.enable_soft_thinking:
+            return CaptureHiddenMode.LAST
+        elif self.return_hidden_states:
+            return CaptureHiddenMode.FULL
+        elif self.spec_info:
+            return getattr(self.spec_info, "capture_hidden_mode", CaptureHiddenMode.NULL)
+        else:
+            return CaptureHiddenMode.NULL
 
     def copy(self):
         # Only contain fields that will be used by process_batch_result
@@ -1618,6 +1645,10 @@ class ModelWorkerBatch:
     spec_info: Optional[Union[EagleVerifyInput, EagleDraftInput]] = None
     # If set, the output of the batch contains the hidden states of the run.
     capture_hidden_mode: CaptureHiddenMode = None
+
+    # For soft thinking mode
+    topk_probs: Optional[torch.Tensor] = None
+    topk_indices: Optional[torch.Tensor] = None
 
 
 @triton.jit

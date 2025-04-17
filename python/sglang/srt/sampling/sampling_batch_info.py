@@ -55,6 +55,9 @@ class SamplingBatchInfo:
 
     # Device
     device: str = "cuda"
+    
+    soft_thinking_modes: Optional[torch.Tensor] = None
+    max_topk: Optional[int] = None
 
     @classmethod
     def from_schedule_batch(cls, batch: ScheduleBatch, vocab_size: int):
@@ -128,6 +131,8 @@ class SamplingBatchInfo:
             },
         )
 
+        soft_thinking_modes = torch.stack([req.sampling_params.soft_thinking_mode for req in reqs])
+         
         ret = cls(
             temperatures=temperatures,
             top_ps=top_ps,
@@ -141,6 +146,8 @@ class SamplingBatchInfo:
             custom_params=custom_params,
             custom_logit_processor=merged_custom_logit_processor,
             device=device,
+            soft_thinking_modes=soft_thinking_modes,
+            max_topk=batch.max_topk
         )
         return ret
 
@@ -208,6 +215,7 @@ class SamplingBatchInfo:
             "top_ps",
             "top_ks",
             "min_ps",
+            "soft_thinking_modes",
         ]:
             value = getattr(self, item, None)
             setattr(self, item, value[keep_indices_device])
@@ -303,6 +311,7 @@ class SamplingBatchInfo:
             "top_ps",
             "top_ks",
             "min_ps",
+            "soft_thinking_modes",
         ]:
             self_val = getattr(self, item, None)
             other_val = getattr(other, item, None)

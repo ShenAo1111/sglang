@@ -200,6 +200,10 @@ class ServerArgs:
 
     # multimodal
     disable_fast_image_processor: bool = False
+    
+    enable_soft_thinking: bool = False
+    think_end_token: str = "<|think|>"
+    max_topk: int = 30
 
     def __post_init__(self):
         # Expert parallelism
@@ -1192,6 +1196,24 @@ class ServerArgs:
             "--disable-fast-image-processor",
             action="store_true",
             help="Adopt base image processor instead of fast image processor.",
+        )
+
+        # Soft thinking mode
+        parser.add_argument(
+            "--enable-soft-thinking",
+            action="store_true",
+            help="Enable soft thinking mode"
+        )
+        
+        parser.add_argument(
+            "--think-end-token",
+            type=str,
+            default="</think>",
+        )
+        parser.add_argument(
+            "--max-topk",
+            type=int,
+            default=ServerArgs.max_topk,
         )
 
     @classmethod

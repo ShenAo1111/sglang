@@ -214,9 +214,12 @@ class CudaGraphRunner:
         if self.enable_torch_compile:
             set_torch_compile_config()
 
+        self.enable_soft_thinking = model_runner.server_args.enable_soft_thinking
+        self.max_topk = model_runner.server_args.max_topk
+        
         # Graph inputs
         with torch.device("cuda"):
-            self.input_ids = torch.zeros((self.max_num_token,), dtype=torch.int64)
+            self.input_ids = None if self.enable_soft_thinking else torch.zeros((self.max_num_token,), dtype=torch.int64) 
             self.req_pool_indices = torch.zeros((self.max_bs,), dtype=torch.int32)
             self.seq_lens = torch.full(
                 (self.max_bs,), self.seq_len_fill_value, dtype=torch.int32
@@ -224,6 +227,8 @@ class CudaGraphRunner:
             self.out_cache_loc = torch.zeros((self.max_num_token,), dtype=torch.int64)
             self.positions = torch.zeros((self.max_num_token,), dtype=torch.int64)
             self.mrope_positions = torch.zeros((3, self.max_bs), dtype=torch.int64)
+            self.topk_probs = torch.zeros((self.max_bs, self.max_topk), dtype=torch.int64) if self.enable_soft_thinking else None
+            self.topk_indices = torch.zeros((self.max_bs, self.max_topk), dtype=torch.int64) if self.enable_soft_thinking else None
 
             # Speculative_inference
             if (
@@ -278,6 +283,8 @@ class CudaGraphRunner:
                 "4. disable cuda graph by --disable-cuda-graph\n"
                 "Open an issue on GitHub https://github.com/sgl-project/sglang/issues/new/choose \n"
             )
+        
+        self.enable_soft_thinking = model_runner.server_args.enable_soft_thinking
 
     @contextmanager
     def model_capture_mode(self):
@@ -364,7 +371,15 @@ class CudaGraphRunner:
         num_tokens = bs * self.num_tokens_per_bs
 
         # Graph inputs
-        input_ids = self.input_ids[:num_tokens]
+        if self.enable_soft_thinking:
+            input_ids = None
+            topk_probs = self.topk_probs[:bs]
+            topk_indices = self.topk_indices[:bs]
+        else:
+            input_ids = self.input_ids[:num_tokens]
+            topk_probs = None
+            topk_indices = None
+            
         req_pool_indices = self.req_pool_indices[:bs]
         seq_lens = self.seq_lens[:bs]
         out_cache_loc = self.out_cache_loc[:num_tokens]
@@ -393,7 +408,9 @@ class CudaGraphRunner:
             gathered_buffer = None
 
         spec_info = self.get_spec_info(num_tokens)
-        if self.capture_hidden_mode != CaptureHiddenMode.FULL:
+        if self.enable_soft_thinking:
+            self.capture_hidden_mode = CaptureHiddenMode.LAST
+        elif self.capture_hidden_mode != CaptureHiddenMode.FULL:
             self.capture_hidden_mode = (
                 spec_info.capture_hidden_mode if spec_info else CaptureHiddenMode.NULL
             )
@@ -418,6 +435,8 @@ class CudaGraphRunner:
             spec_algorithm=self.model_runner.spec_algorithm,
             spec_info=spec_info,
             capture_hidden_mode=self.capture_hidden_mode,
+            topk_probs=topk_probs,
+            topk_indices=topk_indices,
         )
 
         # Attention backend
@@ -533,7 +552,11 @@ class CudaGraphRunner:
             self.replay_prepare(forward_batch)
         else:
             # In speculative decoding, these two fields are still needed.
-            self.input_ids[: self.raw_num_token].copy_(forward_batch.input_ids)
+            # TODO@Ao: CUDA Graph Support
+            if self.enable_soft_thinking:
+                pass
+            else:
+                self.input_ids[: self.raw_num_token].copy_(forward_batch.input_ids)
             self.positions[: self.raw_num_token].copy_(forward_batch.positions)
 
         # Replay

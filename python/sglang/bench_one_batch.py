@@ -139,6 +139,8 @@ def load_model(server_args, port_args, tp_rank):
         enable_multimodal=server_args.enable_multimodal,
         dtype=server_args.dtype,
         quantization=server_args.quantization,
+        enable_soft_thinking=server_args.enable_soft_thinking,
+        max_topk=server_args.max_topk,
     )
     model_runner = ModelRunner(
         model_config=model_config,

@@ -144,6 +144,10 @@ class SchedulerOutputProcessorMixin:
                             )
                             logprob_pt += num_input_logprobs
 
+                if self.enable_soft_thinking:
+                    req.topk_prob = logits_output.topk_probs[i]
+                    req.topk_idx = logits_output.topk_indices[i]
+
             if batch.next_batch_sampling_info:
                 batch.next_batch_sampling_info.update_regex_vocab_mask()
                 self.current_stream.synchronize()
@@ -254,6 +258,12 @@ class SchedulerOutputProcessorMixin:
                 req.grammar.accept_token(next_token_id)
                 req.grammar.finished = req.finished()
 
+            if self.enable_soft_thinking:
+                req.topk_prob = logits_output.topk_probs[i]
+                req.topk_idx = logits_output.topk_indices[i]
+                assert req.topk_prob.shape == req.topk_idx.shape
+
+        # TODO: 能直接在这里更新下一轮的 topk probs和topk indices吗
         if batch.next_batch_sampling_info:
             batch.next_batch_sampling_info.update_regex_vocab_mask()
             self.current_stream.synchronize()

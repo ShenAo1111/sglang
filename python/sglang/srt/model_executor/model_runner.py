@@ -180,6 +180,8 @@ class ModelRunner:
 
         # If it is a draft model tp_group can be different.
         self.initialize(min_per_gpu_memory)
+        
+        self.enable_soft_thinking = server_args.enable_soft_thinking
 
     def initialize(self, min_per_gpu_memory: float):
         server_args = self.server_args
@@ -985,9 +987,16 @@ class ModelRunner:
 
     def forward_decode(self, forward_batch: ForwardBatch):
         self.attn_backend.init_forward_metadata(forward_batch)
-        return self.model.forward(
-            forward_batch.input_ids, forward_batch.positions, forward_batch
-        )
+        if self.enable_soft_thinking:
+            return self.model.forward(
+                None, 
+                forward_batch.positions, 
+                forward_batch,
+            )
+        else:
+            return self.model.forward(
+                forward_batch.input_ids, forward_batch.positions, forward_batch
+            )
 
     def forward_extend(
         self, forward_batch: ForwardBatch, skip_attn_backend_init: bool = False
@@ -1082,13 +1091,23 @@ class ModelRunner:
         self._preprocess_logits(logits_output, forward_batch.sampling_info)
 
         # Sample the next tokens
-        next_token_ids = self.sampler(
-            logits_output,
-            forward_batch.sampling_info,
-            forward_batch.return_logprob,
-            forward_batch.top_logprobs_nums,
-            forward_batch.token_ids_logprobs,
-        )
+        if self.enable_soft_thinking:
+            next_token_ids = self.sampler(
+                logits_output,
+                forward_batch.sampling_info,
+                forward_batch.return_logprob,
+                forward_batch.top_logprobs_nums,
+                forward_batch.token_ids_logprobs,  
+                enable_soft_thinking=self.enable_soft_thinking,
+            )   
+        else:
+            next_token_ids = self.sampler(
+                logits_output,
+                forward_batch.sampling_info,
+                forward_batch.return_logprob,
+                forward_batch.top_logprobs_nums,
+                forward_batch.token_ids_logprobs,
+            )
         return next_token_ids
 
     @property

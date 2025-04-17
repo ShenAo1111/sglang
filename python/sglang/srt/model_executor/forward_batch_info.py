@@ -250,6 +250,10 @@ class ForwardBatch:
 
     # For Qwen2-VL
     mrope_positions: torch.Tensor = None
+    
+    # For soft thinking mode
+    topk_probs: Optional[torch.Tensor] = None
+    topk_indices: Optional[torch.Tensor] = None
 
     @classmethod
     def init_new(
@@ -290,6 +294,8 @@ class ForwardBatch:
             capture_hidden_mode=batch.capture_hidden_mode,
             input_embeds=batch.input_embeds,
             extend_input_logprob_token_ids_gpu=extend_input_logprob_token_ids_gpu,
+            topk_probs=batch.topk_probs,
+            topk_indices=batch.topk_indices,
         )
 
         # For DP attention

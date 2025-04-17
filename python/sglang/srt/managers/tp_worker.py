@@ -71,6 +71,8 @@ class TpModelWorker:
             enable_multimodal=server_args.enable_multimodal,
             dtype=server_args.dtype,
             quantization=server_args.quantization,
+            enable_soft_thinking=server_args.enable_soft_thinking,
+            max_topk=server_args.max_topk,
         )
         self.model_runner = ModelRunner(
             model_config=self.model_config,

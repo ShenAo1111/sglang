@@ -170,6 +170,8 @@ class TokenizerManager:
             enable_multimodal=server_args.enable_multimodal,
             dtype=server_args.dtype,
             quantization=server_args.quantization,
+            enable_soft_thinking=server_args.enable_soft_thinking,
+            max_topk=server_args.max_topk,
         )
 
         self.is_generation = self.model_config.is_generation

@@ -1,5 +1,5 @@
 import logging
-from typing import List
+from typing import List, Optional
 
 import torch
 import torch.distributed as dist
@@ -42,6 +42,7 @@ class Sampler(nn.Module):
         return_logprob: bool,
         top_logprobs_nums: List[int],
         token_ids_logprobs: List[List[int]],
+        enable_soft_thinking: Optional[bool] = False,
     ):
         """Run a sampler & compute logprobs and update logits_output accordingly.
 
@@ -56,6 +57,7 @@ class Sampler(nn.Module):
                 performs sampling in draft workers.
         """
         logits = logits_output.next_token_logits
+        probs_clone = None
 
         # Apply the custom logit processors if registered in the sampling info.
         if sampling_info.has_custom_logit_processor:
@@ -74,13 +76,19 @@ class Sampler(nn.Module):
             batch_next_token_ids = torch.argmax(logits, -1)
             if return_logprob:
                 logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
-        else:
-            # Post process logits
-            logits.div_(sampling_info.temperatures)
-            logits[:] = torch.softmax(logits, dim=-1)
-            probs = logits
-            del logits
 
+            if enable_soft_thinking:
+                probs_clone = self._softmax(
+                    logits,
+                    sampling_info,
+                )
+        else:
+            probs = self._softmax(
+                    logits,
+                    sampling_info,
+                ) 
+            if enable_soft_thinking:
+                probs_clone = probs.clone()
             if global_server_args_dict["sampling_backend"] == "flashinfer":
                 if return_logprob:
                     # NOTE: the top_p_renorm_prob from flashinfer has numerical problems,
@@ -168,6 +176,9 @@ class Sampler(nn.Module):
                 group=self.tp_sync_group,
             )
 
+        if enable_soft_thinking:
+            self._set_topk_info(probs_clone, logits_output, sampling_info)
+
         return batch_next_token_ids
 
     def _apply_custom_logit_processor(
@@ -202,6 +213,76 @@ class Sampler(nn.Module):
             logger.debug(
                 f"Custom logit processor {processor.__class__.__name__} is applied."
             )
+
+    def _softmax(
+        self,
+        logits: torch.Tensor,
+        sampling_info: SamplingBatchInfo,
+    ):
+        """Apply softmax to the logits."""
+        # Apply temperature scaling
+        logits.div_(sampling_info.temperatures)
+        # Apply softmax
+        logits[:] = torch.softmax(logits, dim=-1)
+        probs = logits
+        del logits
+        return probs
+
+    def _set_topk_info(
+        self,
+        probs: torch.Tensor,
+        logits_output: LogitsProcessorOutput,
+        sampling_info: SamplingBatchInfo,
+    ):
+        # Step 1: sort probs, 形状不变
+        probs_sort, probs_idx = probs.sort(dim=-1, descending=True)  # (B, vocab_size)
+
+        # Step 2: top-k masking, 形状不变
+        max_k = sampling_info.max_topk
+        top_k_mask = torch.arange(probs.shape[-1], device=probs.device).unsqueeze(0) >= sampling_info.top_ks.unsqueeze(1)
+        probs_sort = probs_sort.masked_fill(top_k_mask, 0.0)
+
+        # Step 3: top-p masking, 形状不变
+        probs_cumsum = probs_sort.cumsum(dim=-1)
+        top_p_mask = (probs_cumsum - probs_sort) > sampling_info.top_ps.unsqueeze(1)
+        probs_sort = probs_sort.masked_fill(top_p_mask, 0.0)
+
+        # Step 4: min-p filtering (if enabled)
+        if sampling_info.need_min_p_sampling:
+            min_p_thresholds = probs_sort[:, 0] * sampling_info.min_ps
+            min_p_mask = probs_sort < min_p_thresholds.unsqueeze(1)
+            probs_sort = probs_sort.masked_fill(min_p_mask, 0.0)
+
+        # Step 5: normalize valid probs
+        probs_sum = probs_sort.sum(dim=-1, keepdim=True)
+        normalized_probs_sort = probs_sort / torch.where(
+            probs_sum > 0,
+            probs_sum,
+            torch.tensor(1.0, device=probs.device, dtype=probs.dtype)
+        )  # (B, vocab_size)
+
+        # Prepare tensors for both modes
+        # Mode 1: top-k probabilities and indices
+        topk_probs = normalized_probs_sort[:, :max_k]  # (B, K)
+        topk_indices = probs_idx[:, :max_k]  # (B, K)
+
+        # Mode 0: one-hot and sampled index
+        sampled_indices = torch.multinomial(normalized_probs_sort[:, :max_k], num_samples=1)  # (B, 1)
+        one_hot_probs = torch.zeros_like(topk_probs).scatter_(1, sampled_indices, 1.0)  # (B, K)
+        sampled_token_ids = torch.gather(probs_idx[:, :max_k], dim=1, index=sampled_indices)  # (B, 1)
+        one_hot_indices = torch.zeros_like(topk_indices).scatter_(1, sampled_indices, sampled_token_ids)  # (B, K)
+
+        # Combine based on soft_thinking_modes
+        # Initialize output tensors
+        soft_thinking_modes = sampling_info.soft_thinking_modes
+        one_hot_probs[soft_thinking_modes] = topk_probs[soft_thinking_modes]
+        one_hot_indices[soft_thinking_modes] = topk_indices[soft_thinking_modes]
+        combined_probs = one_hot_probs
+        combined_indices = one_hot_indices
+
+        # Store the results separately
+        logits_output.topk_probs = combined_probs  # (B, K)
+        logits_output.topk_indices = combined_indices  # (B, K)
 
 
 def top_k_top_p_min_p_sampling_from_probs_torch(
