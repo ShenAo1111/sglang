@@ -1518,7 +1518,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         topk_indices = None
         if self.model_config.enable_soft_thinking and self.forward_mode.is_decode():
             topk_probs = torch.stack([req.topk_prob for req in self.reqs])
-            topk_indices = torch.stack[req.topk_idx for req in self.reqs])
+            topk_indices = torch.stack([req.topk_idx for req in self.reqs])
         global bid
         bid += 1
         return ModelWorkerBatch(
